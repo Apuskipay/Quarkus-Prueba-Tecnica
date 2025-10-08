@@ -9,7 +9,6 @@ import jakarta.ws.rs.core.Response;
 import org.bson.types.ObjectId;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
-import javax.print.attribute.standard.Media;
 import java.time.Duration;
 import java.util.Locale;
 import java.util.Map;
@@ -145,6 +144,6 @@ public class ProfileResources
                 .sign();
 
         profile.update();
-        return Response.ok(profile).entity(Map.of("id", id, "token", token)).build();
+        return Response.ok(profile).header("X-Token", token).build();
     }
 }
