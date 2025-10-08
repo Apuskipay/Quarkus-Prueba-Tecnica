@@ -1,0 +1,176 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: profiles
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mongo-pvc
+  namespace: profiles
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests: { storage: 5Gi }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mongo
+  namespace: profiles
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: mongo } }
+  template:
+    metadata: { labels: { app: mongo } }
+    spec:
+      containers:
+        - name: mongo
+          image: mongo:7
+          args: ["--bind_ip_all"]
+          ports: [{ containerPort: 27017 }]
+          env:
+            - name: MONGO_INITDB_ROOT_USERNAME
+              valueFrom: { secretKeyRef: { name: mongo-cred, key: MONGO_USER } }
+            - name: MONGO_INITDB_ROOT_PASSWORD
+              valueFrom: { secretKeyRef: { name: mongo-cred, key: MONGO_PASS } }
+          volumeMounts: [{ name: data, mountPath: /data/db }]
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: mongo-pvc }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongo
+  namespace: profiles
+spec:
+  selector: { app: mongo }
+  ports: [{ name: mongo, port: 27017, targetPort: 27017 }]
+  type: ClusterIP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: profiles-crud
+  namespace: profiles
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: profiles-crud } }
+  template:
+    metadata: { labels: { app: profiles-crud } }
+    spec:
+      containers:
+        - name: app
+          image: profiles-crud:1.0.0
+          imagePullPolicy: IfNotPresent
+          ports: [{ containerPort: 8080 }]
+          env:
+            - name: MONGO_USER
+              valueFrom: { secretKeyRef: { name: mongo-cred, key: MONGO_USER } }
+            - name: MONGO_PASS
+              valueFrom: { secretKeyRef: { name: mongo-cred, key: MONGO_PASS } }
+            - name: QUARKUS_MONGODB_CONNECTION_STRING
+              value: mongodb://$(MONGO_USER):$(MONGO_PASS)@mongo:27017
+            - name: QUARKUS_MONGODB_DATABASE
+              value: profiles
+            - name: JWT_ISSUER
+              value: profiles-crud
+            - name: JWT_AUDIENCE
+              value: profiles-reader
+            - name: JWT_TTL_SECONDS
+              value: "900"
+            - name: QUARKUS_SECURITY_USERS_FILE_USERS
+              value: /config/users.properties
+            - name: QUARKUS_SECURITY_USERS_FILE_ROLES
+              value: /config/roles.properties
+            - name: SMALLRYE_JWT_SIGN_KEY_LOCATION
+              value: /keys/privateKey.pem
+          volumeMounts:
+            - { name: crud-basic, mountPath: /config, readOnly: true }
+            - { name: crud-jwt, mountPath: /keys, readOnly: true }
+          readinessProbe:
+            {
+              httpGet: { path: /q/health/ready, port: 8080 },
+              initialDelaySeconds: 5,
+              periodSeconds: 10,
+            }
+          livenessProbe:
+            {
+              httpGet: { path: /q/health/live, port: 8080 },
+              initialDelaySeconds: 15,
+              periodSeconds: 15,
+            }
+      volumes:
+        - { name: crud-basic, secret: { secretName: crud-basic-auth } }
+        - { name: crud-jwt, secret: { secretName: crud-jwt-private } }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: profiles-crud
+  namespace: profiles
+spec:
+  selector: { app: profiles-crud }
+  type: LoadBalancer
+  ports:
+    - { name: http, port: 8081, targetPort: 8080 }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: profiles-reader
+  namespace: profiles
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: profiles-reader } }
+  template:
+    metadata: { labels: { app: profiles-reader } }
+    spec:
+      containers:
+        - name: app
+          image: profiles-reader:1.0.0
+          imagePullPolicy: IfNotPresent
+          ports: [{ containerPort: 8080 }]
+          env:
+            - name: MONGO_USER
+              valueFrom: { secretKeyRef: { name: mongo-cred, key: MONGO_USER } }
+            - name: MONGO_PASS
+              valueFrom: { secretKeyRef: { name: mongo-cred, key: MONGO_PASS } }
+            - name: QUARKUS_MONGODB_CONNECTION_STRING
+              value: mongodb://$(MONGO_USER):$(MONGO_PASS)@mongo:27017
+            - name: QUARKUS_MONGODB_DATABASE
+              value: profiles
+            - name: REQUIRED_ISS
+              value: profiles-crud
+            - name: REQUIRED_AUD
+              value: profiles-reader
+            - name: MP_JWT_VERIFY_PUBLICKEY_LOCATION
+              value: /keys/publicKey.pem
+          volumeMounts:
+            - { name: reader-jwt, mountPath: /keys, readOnly: true }
+          readinessProbe:
+            {
+              httpGet: { path: /q/health/ready, port: 8080 },
+              initialDelaySeconds: 5,
+              periodSeconds: 10,
+            }
+          livenessProbe:
+            {
+              httpGet: { path: /q/health/live, port: 8080 },
+              initialDelaySeconds: 15,
+              periodSeconds: 15,
+            }
+      volumes:
+        - { name: reader-jwt, secret: { secretName: reader-jwt-public } }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: profiles-reader
+  namespace: profiles
+spec:
+  selector: { app: profiles-reader }
+  type: LoadBalancer
+  ports:
+    - { name: http, port: 8082, targetPort: 8080 }
